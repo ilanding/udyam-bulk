@@ -78,22 +78,29 @@ def update_zip(job):
         pass
 
 
-def goto_verify(page):
-    for _ in range(2):
+def goto_verify(page, job):
+    def stage(s):
+        try:
+            job["stage"] = s
+        except Exception:
+            pass
+    for attempt in (1, 2):
+        stage(f"portal khul raha hai (koshish {attempt}/2)...")
         try:
             page.goto(VERIFY_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
         except Exception:
             time.sleep(3)
             continue
         try:
-            page.wait_for_selector(SEL_URN, timeout=20000)
+            page.wait_for_selector(SEL_URN, timeout=15000)
             return True
         except Exception:
+            stage("session ban raha hai, dobara koshish...")
             try:
                 page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
                 time.sleep(2)
                 page.goto(VERIFY_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-                page.wait_for_selector(SEL_URN, timeout=20000)
+                page.wait_for_selector(SEL_URN, timeout=15000)
                 return True
             except Exception:
                 time.sleep(3)
@@ -106,7 +113,7 @@ def process_urn(page, job, urn):
         job["done"].append(urn)
         return
 
-    if not goto_verify(page):
+    if not goto_verify(page, job):
         job["failed"].append({"urn": urn, "reason": "verify page nahi khula"})
         return
 
@@ -118,6 +125,7 @@ def process_urn(page, job, urn):
 
     for _ in range(3):
         # captcha ka screenshot lo aur user ke solve ka wait karo
+        job["stage"] = "captcha load ho raha hai..."
         try:
             img = page.locator(SEL_CAPTCHA_IMG).first
             img.screenshot(path=str(job["captcha_file"]))
@@ -128,8 +136,8 @@ def process_urn(page, job, urn):
                 job["failed"].append({"urn": urn, "reason": "captcha image nahi mila"})
                 return
 
-        job["state"] = "awaiting_captcha"
         job["captcha_ts"] = time.time()
+        job["state"] = "awaiting_captcha"
         job["event"].clear()
         job["solution"] = None
         got = job["event"].wait(timeout=CAPTCHA_WAIT)
@@ -142,6 +150,7 @@ def process_urn(page, job, urn):
             job["failed"].append({"urn": urn, "reason": "captcha ka jawab nahi aaya (timeout)"})
             return
 
+        job["stage"] = "verify ho raha hai..."
         try:
             page.fill(SEL_CAPTCHA, sol)
             page.click(SEL_VERIFY)
@@ -155,7 +164,7 @@ def process_urn(page, job, urn):
             html = ""
 
         if "Incorrect verification code" in html:
-            if not goto_verify(page):
+            if not goto_verify(page, job):
                 job["failed"].append({"urn": urn, "reason": "retry pe page nahi khula"})
                 return
             try:
@@ -165,11 +174,19 @@ def process_urn(page, job, urn):
             continue
 
         if "PrintUdyamApplication" in page.url or "UDYAM REGISTRATION CERTIFICATE" in html:
+            job["stage"] = "certificate download ho raha hai..."
             try:
                 with page.expect_download(timeout=30000) as dl_info:
                     page.locator(SEL_DL).first.click()
                 dl = dl_info.value
                 dl.save_as(pdf_path)
+                # validate: asli PDF aaya ya portal ka error page?
+                with open(pdf_path, "rb") as f:
+                    head = f.read(5)
+                if head != b"%PDF-":
+                    pdf_path.unlink(missing_ok=True)
+                    job["failed"].append({"urn": urn, "reason": "download me PDF nahi aaya (portal glitch?)"})
+                    return
                 job["done"].append(urn)
                 update_zip(job)
             except Exception:
@@ -187,9 +204,11 @@ def run_job(job):
     job["state"] = "working"
     try:
         with sync_playwright() as pw:
+            job["stage"] = "browser khul raha hai..."
             browser = pw.chromium.launch(headless=True, args=[
                 "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
             ], proxy=get_proxy())
+            job["browser"] = browser
             ctx = browser.new_context(accept_downloads=True)
             page = ctx.new_page()
             try:
@@ -239,13 +258,26 @@ def api_start():
         return jsonify({"ok": False, "error": "koi URN nahi mila"}), 400
 
     with jobs_lock:
-        # purana job roko — turant jagao taaki uska browser band ho jaye
+        # purane done jobs ko memory se hatao
+        for jid in list(jobs.keys()):
+            try:
+                if jobs[jid].get("state") == "done":
+                    del jobs[jid]
+            except Exception:
+                pass
+        # purana job turant roko: flag + wait se jagao + browser force-close
         for j in jobs.values():
             j["stop"] = True
             try:
                 j["event"].set()
             except Exception:
                 pass
+            b = j.get("browser")
+            if b:
+                try:
+                    b.close()
+                except Exception:
+                    pass
         job_id = uuid.uuid4().hex[:12]
         job_dir = DATA / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -261,6 +293,7 @@ def api_start():
             "state": "starting",
             "captcha_file": job_dir / "captcha.png",
             "captcha_ts": 0,
+            "stage": "",
             "event": threading.Event(),
             "solution": None,
             "stop": False,
@@ -287,6 +320,7 @@ def api_status(job_id):
         "done": job["done"][-10:],
         "failed": job["failed"],
         "captcha_ts": job["captcha_ts"],
+        "stage": job.get("stage", ""),
     })
 
 

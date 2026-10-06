@@ -66,7 +66,7 @@
 </div>
 
 <script>
-let jobId = null, pollTimer = null, lastCapTs = 0;
+let jobId = null, pollTimer = null, lastCapTs = 0, fetchFails = 0;
 
 async function startJob() {
   const urns = document.getElementById('urns').value;
@@ -95,10 +95,17 @@ async function poll() {
   try {
     const r = await fetch('/api/status/' + jobId);
     const s = await r.json();
-    if (!s.ok) return;
+    if (!s.ok) {
+      // job gayab = server restart/redeploy hua — freeze mat karo, batao
+      clearInterval(pollTimer);
+      document.getElementById('capCard').classList.add('hidden');
+      document.getElementById('cururn').textContent = 'Server restart ho gaya hai — page refresh karke dobara Start dabao.';
+      return;
+    }
+    fetchFails = 0;
     document.getElementById('counts').textContent = s.done_count + ' / ' + s.total + ' done';
     document.getElementById('barfill').style.width = (s.total ? (s.done_count / s.total * 100) : 0) + '%';
-    document.getElementById('cururn').textContent = s.current_urn ? ('Chal raha: ' + s.current_urn) : '';
+    document.getElementById('cururn').textContent = s.stage || (s.current_urn ? ('Chal raha: ' + s.current_urn) : '');
     document.getElementById('donelist').innerHTML = s.done.map(u => '<li class="ok">✓ ' + u + '</li>').join('');
     document.getElementById('failedlist').innerHTML = s.failed.map(f => '<li class="bad">✗ ' + f.urn + ' — ' + f.reason + '</li>').join('');
 
@@ -124,7 +131,14 @@ async function poll() {
         s.done_count + ' download hue, ' + s.failed.length + ' fail.';
       window.scrollTo(0, document.body.scrollHeight);
     }
-  } catch (e) { /* agle poll me retry */ }
+  } catch (e) {
+    fetchFails++;
+    if (fetchFails >= 5) {
+      clearInterval(pollTimer);
+      document.getElementById('capCard').classList.add('hidden');
+      document.getElementById('cururn').textContent = 'Server se sampark toot gaya — page refresh karke dobara try karo.';
+    }
+  }
 }
 
 async function solveCaptcha() {
