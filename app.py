@@ -133,6 +133,8 @@ def process_urn(page, job, urn):
         job["event"].clear()
         job["solution"] = None
         got = job["event"].wait(timeout=CAPTCHA_WAIT)
+        if job.get("stop"):
+            return  # naya job shuru ho gaya — chupchaap bahar, fail me mat gino
         sol = job.get("solution")
         job["state"] = "working"
 
@@ -237,9 +239,13 @@ def api_start():
         return jsonify({"ok": False, "error": "koi URN nahi mila"}), 400
 
     with jobs_lock:
-        # purana job roko
+        # purana job roko — turant jagao taaki uska browser band ho jaye
         for j in jobs.values():
             j["stop"] = True
+            try:
+                j["event"].set()
+            except Exception:
+                pass
         job_id = uuid.uuid4().hex[:12]
         job_dir = DATA / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
