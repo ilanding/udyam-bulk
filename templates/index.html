@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Udyam Bulk Download</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f4f6f8; color: #1a1a1a; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  textarea { width: 100%; min-height: 130px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; font-size: 14px; font-family: monospace; }
+  button { background: #0a5337; color: #fff; border: 0; border-radius: 8px; padding: 12px 18px; font-size: 15px; cursor: pointer; width: 100%; margin-top: 10px; }
+  button:disabled { background: #9db5a9; cursor: default; }
+  button.secondary { background: #1a73e8; }
+  .hidden { display: none; }
+  .bar { height: 10px; background: #e5e5e5; border-radius: 6px; overflow: hidden; margin: 8px 0; }
+  .bar > div { height: 100%; background: #0a5337; width: 0%; transition: width .3s; }
+  .counts { font-size: 15px; font-weight: 600; }
+  #capimg { max-width: 100%; border: 1px solid #ddd; border-radius: 8px; display: block; margin: 8px auto; }
+  input[type=text] { width: 100%; padding: 12px; font-size: 17px; border: 1px solid #ccc; border-radius: 8px; text-align: center; letter-spacing: 2px; text-transform: uppercase; }
+  ul { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; max-height: 180px; overflow: auto; }
+  li.ok { color: #0a5337; }
+  li.bad { color: #b3261e; }
+  .note { font-size: 12px; color: #777; margin-top: 8px; }
+  .pulse { animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Udyam Bulk Certificate Download</h1>
+  <div class="sub">URN list dalo, har CAPTCHA khud solve karo, end me ZIP download karo.</div>
+
+  <div class="card" id="startCard">
+    <div style="font-weight:600;margin-bottom:8px;">Step 1 — URN list (ek line pe ek, max 100)</div>
+    <textarea id="urns" placeholder="UDYAM-UP-62-0065418&#10;UDYAM-DL-06-0012345"></textarea>
+    <button id="startBtn" onclick="startJob()">Start Download</button>
+    <div class="note">Pehli baar server ko uthne me 1-2 min lag sakta hai (free hosting sota hai). Page khula rakho.</div>
+  </div>
+
+  <div class="card hidden" id="progCard">
+    <div class="counts" id="counts">0 / 0</div>
+    <div class="bar"><div id="barfill"></div></div>
+    <div id="cururn" style="font-size:13px;color:#555;"></div>
+    <ul id="donelist"></ul>
+    <ul id="failedlist"></ul>
+    <button class="secondary" id="zipBtn" onclick="downloadZip()">Download ZIP (ab tak ke)</button>
+  </div>
+
+  <div class="card hidden" id="capCard">
+    <div style="font-weight:600;" class="pulse">Step 2 — CAPTCHA solve karo</div>
+    <img id="capimg" alt="captcha">
+    <input type="text" id="capsol" placeholder="CODE" autocomplete="off" maxlength="10">
+    <button onclick="solveCaptcha()">Submit CAPTCHA</button>
+    <div class="note">Code case-sensitive hai — bilkul waisa hi likho jaisa dikhe.</div>
+  </div>
+
+  <div class="card hidden" id="doneCard">
+    <div style="font-weight:600;font-size:17px;">Ho gaya! 🎉</div>
+    <div id="summary" style="margin:8px 0;font-size:14px;"></div>
+    <button class="secondary" onclick="downloadZip()">Final ZIP Download Karo</button>
+  </div>
+</div>
+
+<script>
+let jobId = null, pollTimer = null, lastCapTs = 0;
+
+async function startJob() {
+  const urns = document.getElementById('urns').value;
+  if (!urns.trim()) { alert('Pehle URN list dalo'); return; }
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true; btn.textContent = 'Server uth raha hai...';
+  try {
+    const r = await fetch('/api/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({urns})
+    });
+    const j = await r.json();
+    if (!j.ok) { alert(j.error || 'start nahi hua'); btn.disabled = false; btn.textContent = 'Start Download'; return; }
+    jobId = j.job_id;
+    document.getElementById('startCard').classList.add('hidden');
+    document.getElementById('progCard').classList.remove('hidden');
+    pollTimer = setInterval(poll, 2000);
+    poll();
+  } catch (e) {
+    alert('Server se baat nahi ho payi. 1 min ruk ke dobara try karo.');
+    btn.disabled = false; btn.textContent = 'Start Download';
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/status/' + jobId);
+    const s = await r.json();
+    if (!s.ok) return;
+    document.getElementById('counts').textContent = s.done_count + ' / ' + s.total + ' done';
+    document.getElementById('barfill').style.width = (s.total ? (s.done_count / s.total * 100) : 0) + '%';
+    document.getElementById('cururn').textContent = s.current_urn ? ('Chal raha: ' + s.current_urn) : '';
+    document.getElementById('donelist').innerHTML = s.done.map(u => '<li class="ok">✓ ' + u + '</li>').join('');
+    document.getElementById('failedlist').innerHTML = s.failed.map(f => '<li class="bad">✗ ' + f.urn + ' — ' + f.reason + '</li>').join('');
+
+    const capCard = document.getElementById('capCard');
+    if (s.state === 'awaiting_captcha') {
+      capCard.classList.remove('hidden');
+      if (s.captcha_ts !== lastCapTs) {
+        lastCapTs = s.captcha_ts;
+        document.getElementById('capimg').src = '/api/captcha/' + jobId + '?t=' + Date.now();
+        document.getElementById('capsol').value = '';
+        document.getElementById('capsol').focus();
+      }
+    } else {
+      capCard.classList.add('hidden');
+    }
+
+    if (s.state === 'done') {
+      clearInterval(pollTimer);
+      capCard.classList.add('hidden');
+      const dc = document.getElementById('doneCard');
+      dc.classList.remove('hidden');
+      document.getElementById('summary').textContent =
+        s.done_count + ' download hue, ' + s.failed.length + ' fail.';
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+  } catch (e) { /* agle poll me retry */ }
+}
+
+async function solveCaptcha() {
+  const sol = document.getElementById('capsol').value.trim();
+  if (!sol) { alert('Code likho pehle'); return; }
+  const r = await fetch('/api/solve', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({job_id: jobId, solution: sol})
+  });
+  const j = await r.json();
+  if (!j.ok) alert(j.error || 'submit nahi hua');
+  else document.getElementById('capsol').value = '';
+}
+
+function downloadZip() {
+  window.location = '/api/zip/' + jobId;
+}
+
+document.getElementById('capsol').addEventListener('keydown', e => {
+  if (e.key === 'Enter') solveCaptcha();
+});
+</script>
+</body>
+</html>
