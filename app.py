@@ -88,13 +88,15 @@ def goto_verify(page, job):
         stage(f"portal khul raha hai (koshish {attempt}/2)...")
         try:
             page.goto(VERIFY_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        except Exception:
+        except Exception as e:
+            job["last_error"] = f"goto verify: {str(e)[:120]}"
             time.sleep(3)
             continue
         try:
             page.wait_for_selector(SEL_URN, timeout=15000)
             return True
-        except Exception:
+        except Exception as e:
+            job["last_error"] = f"selector: {str(e)[:120]}"
             stage("session ban raha hai, dobara koshish...")
             try:
                 page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
@@ -102,7 +104,8 @@ def goto_verify(page, job):
                 page.goto(VERIFY_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
                 page.wait_for_selector(SEL_URN, timeout=15000)
                 return True
-            except Exception:
+            except Exception as e2:
+                job["last_error"] = f"retry: {str(e2)[:120]}"
                 time.sleep(3)
     return False
 
@@ -114,7 +117,7 @@ def process_urn(page, job, urn):
         return
 
     if not goto_verify(page, job):
-        job["failed"].append({"urn": urn, "reason": "verify page nahi khula"})
+        job["failed"].append({"urn": urn, "reason": "verify page nahi khula" + (f" ({job['last_error']})" if job.get("last_error") else "")})
         return
 
     try:
@@ -294,6 +297,7 @@ def api_start():
             "captcha_file": job_dir / "captcha.png",
             "captcha_ts": 0,
             "stage": "",
+            "last_error": "",
             "event": threading.Event(),
             "solution": None,
             "stop": False,
@@ -321,6 +325,8 @@ def api_status(job_id):
         "failed": job["failed"],
         "captcha_ts": job["captcha_ts"],
         "stage": job.get("stage", ""),
+        "proxy_on": get_proxy() is not None,
+        "last_error": job.get("last_error", ""),
     })
 
 
